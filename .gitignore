@@ -1,0 +1,6 @@
+/build
+client_secret.json
+/dist
+downloaded_videos.json
+/youtube_downloads
+token.json
