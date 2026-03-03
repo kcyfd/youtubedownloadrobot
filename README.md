@@ -79,7 +79,7 @@ pip install zhconv
 ```bash
 python ytrobot.py
 ```
-![自动下载视频流程](./doc/自动下载视频.png)
+![自动下载视频流程](./doc/autodownload.png)
 
 流程简述：
 
@@ -107,3 +107,5 @@ python ytrobot.py
 ## 许可证
 
 按项目仓库约定使用。
+
+联系qq:2641550239
