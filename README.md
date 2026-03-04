@@ -66,6 +66,11 @@ pip install zhconv
 | 文件/目录 | 说明 |
 |-----------|------|
 | `ytrobot.py` | 主程序 |
+| `ytdl.py` | 单个视频下载脚本 |
+| `uploaddy.py` | 根据 `youtube_downloads` 内的 mp4 + `.info.json` 自动上传抖音，并记录已上传视频 |
+| `conf.py` | 抖音等上传脚本的基础配置（浏览器路径、无头模式等） |
+| `utils/` | 上传相关的通用工具（日志、Playwright 初始化等） |
+| `uploader/` | 各平台上传实现，这里只用到了 `douyin_uploader` |
 | `config.json` | 代理、cookies_from_browser 等配置 |
 | `client_secret.json` | Google OAuth 客户端密钥（需自行创建） |
 | `token.json` | OAuth 令牌（首次授权后生成） |
@@ -73,6 +78,34 @@ pip install zhconv
 | `downloaded_videos.json` | 已下载视频记录（id、标题、播放量、时间、文件名） |
 | `youtube_downloads/` | 默认下载目录（可在调用时修改） |
 | `ytrobot.log` | 日志（按天滚动，保留 7 天） |
+
+### 抖音上传相关依赖
+
+自动上传抖音依赖：
+
+```bash
+pip install playwright loguru
+playwright install
+```
+
+浏览器路径请在 `conf.py` 中按实际情况修改 `LOCAL_CHROME_PATH`。
+
+### 抖音登录与上传
+
+- **首次/更新登录：**
+  ```bash
+  python douyin_login.py
+  ```
+  按提示在打开的浏览器中登录抖音创作者中心，完成后会在 `cookies/douyin_uploader/account.json` 生成/更新登录状态。
+
+- **自动上传抖音：**
+  ```bash
+  python uploaddy.py
+  ```
+  会读取 `youtube_downloads/` 中未上传过的视频，通过同名 `.info.json` 的标题和标签作为抖音标题与话题上传；  
+  若 cookie 不存在或失效，也会自动触发浏览器登录一次。  
+  在 `config.json` 中可配置 `douyin_max_uploads_per_24h`（24 小时内最多上传数量，默认 10）；  
+  上传间隔在 0.5～8 小时之间随机，上传失败的视频不会写入已上传记录，下次会重试。
 
 ## 运行方式
 

@@ -4,3 +4,10 @@ client_secret.json
 downloaded_videos.json
 /youtube_downloads
 token.json
+/data
+/__pycache__
+/logs
+/uploader/douyin_uploader/__pycache__
+/uploader/__pycache__
+/utils/__pycache__
+/cookies

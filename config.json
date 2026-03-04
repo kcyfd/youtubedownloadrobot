@@ -1,4 +1,5 @@
 {
   "proxy": "socks5://127.0.0.1:10809",
-  "cookies_from_browser": "firefox"
+  "cookies_from_browser": "firefox",
+  "douyin_max_uploads_per_24h": 10
 }
