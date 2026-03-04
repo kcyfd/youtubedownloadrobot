@@ -1,6 +1,6 @@
 # ytrobot — 订阅频道热门视频自动下载
 
-从你的 YouTube 订阅频道中，按「最近 7 天播放量最高」和「总播放量最高」筛选视频，并用 yt-dlp 自动下载，避免重复下载。
+从你的 YouTube 订阅频道中，按「最近 7 天播放量最高」和「总播放量最高」筛选视频，并用 yt-dlp 自动下载，避免重复下载（仅下载体积小于 1 GB 的视频）。
 
 ## 功能概览
 
@@ -54,7 +54,8 @@ pip install zhconv
 ```json
 {
   "proxy": "socks5://127.0.0.1:10809",
-  "cookies_from_browser": "firefox"
+  "cookies_from_browser": "firefox",
+  "douyin_max_uploads_per_24h": 10
 }
 ```
 
@@ -65,7 +66,7 @@ pip install zhconv
 
 | 文件/目录 | 说明 |
 |-----------|------|
-| `ytrobot.py` | 主程序 |
+| `ytrobot.py` | 主程序（按规则筛选订阅并下载，仅下载小于 1 GB 的视频） |
 | `ytdl.py` | 单个视频下载脚本 |
 | `uploaddy.py` | 根据 `youtube_downloads` 内的 mp4 + `.info.json` 自动上传抖音，并记录已上传视频 |
 | `conf.py` | 抖音等上传脚本的基础配置（浏览器路径、无头模式等） |
@@ -77,7 +78,8 @@ pip install zhconv
 | `youtube_tokens.json` | 可由 gettoken 等工具生成，与 token.json 二选一 |
 | `downloaded_videos.json` | 已下载视频记录（id、标题、播放量、时间、文件名） |
 | `youtube_downloads/` | 默认下载目录（可在调用时修改） |
-| `ytrobot.log` | 日志（按天滚动，保留 7 天） |
+| `ytrobot.log` | 下载日志（按天滚动，保留 7 天） |
+| `uploaddy.log` | 抖音上传日志（按天滚动，保留 7 天） |
 
 ### 抖音上传相关依赖
 
@@ -88,7 +90,7 @@ pip install playwright loguru
 playwright install
 ```
 
-浏览器路径请在 `conf.py` 中按实际情况修改 `LOCAL_CHROME_PATH`。
+默认使用 Playwright 自带的 Chromium；如需指定本机 Chrome 可在 `conf.py` 中设置 `LOCAL_CHROME_PATH`。
 
 ### 抖音登录与上传
 
@@ -102,10 +104,10 @@ playwright install
   ```bash
   python uploaddy.py
   ```
-  会读取 `youtube_downloads/` 中未上传过的视频，通过同名 `.info.json` 的标题和标签作为抖音标题与话题上传；  
-  若 cookie 不存在或失效，也会自动触发浏览器登录一次。  
+  常驻运行，定期扫描 `youtube_downloads/` 中未上传过的 mp4，通过同名 `.info.json` 的标题和标签作为抖音标题与话题上传；  
+  若 cookie 不存在或失效，会自动触发浏览器登录一次；全部上传完后每隔 60 秒重新检查是否有新视频。  
   在 `config.json` 中可配置 `douyin_max_uploads_per_24h`（24 小时内最多上传数量，默认 10）；  
-  上传间隔在 0.5～8 小时之间随机，上传失败的视频不会写入已上传记录，下次会重试。
+  每个视频上传间隔在 0.5～8 小时之间随机，上传失败的视频不会写入已上传记录，下次会重试。
 
 ## 运行方式
 

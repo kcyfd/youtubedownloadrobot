@@ -194,35 +194,9 @@ def main():
         LOGGER.error("账号文件不存在: %s", account_file)
         return
 
-    uploaded_records = load_uploaded_records()
-    uploaded_set = {item["path"] for item in uploaded_records if item.get("path")}
-    all_mp4 = sorted(video_dir.glob("*.mp4"))
-    to_upload = [f for f in all_mp4 if str(f.resolve()) not in uploaded_set]
-
-    if not to_upload:
-        LOGGER.info("没有需要上传的新视频（已记录的都视为已上传）。")
-        return
-
     douyin_config = load_douyin_config()
     max_uploads_per_24h = douyin_config["douyin_max_uploads_per_24h"]
 
-    # 启动时先检查 24 小时上传配额
-    now = datetime.now()
-    uploads_24h = _count_uploads_in_last_24h(uploaded_records, now)
-    if uploads_24h >= max_uploads_per_24h:
-        LOGGER.info(
-            "过去24小时内已上传 %s 个视频，已达到上限 %s 个，本次不再上传。",
-            uploads_24h,
-            max_uploads_per_24h,
-        )
-        return
-
-    LOGGER.info(
-        "共 %s 个视频，已上传 %s 个，本次待上传 %s 个。",
-        len(all_mp4),
-        len(uploaded_set),
-        len(to_upload),
-    )
     LOGGER.info(
         "24 小时上限：%s 个，上传间隔：%s～%s 小时随机。",
         max_uploads_per_24h,
@@ -230,68 +204,106 @@ def main():
         INTERVAL_MAX_HOURS,
     )
 
-    # handle=True：若 cookie 不存在或失效，将自动打开浏览器让你登录一次
-    ok = asyncio.run(douyin_setup(str(account_file), handle=True))
-    if not ok:
-        LOGGER.error("Cookie 无效或未登录，请先运行登录流程。")
-        return
+    # 持续运行：循环检查新视频并上传
+    while True:
+        uploaded_records = load_uploaded_records()
+        uploaded_set = {item["path"] for item in uploaded_records if item.get("path")}
+        all_mp4 = sorted(video_dir.glob("*.mp4"))
+        to_upload = [f for f in all_mp4 if str(f.resolve()) not in uploaded_set]
 
-    # 0 表示立即发布，不设置定时
-    for file_path in to_upload:
-        # 每个视频前检查 24 小时配额与随机间隔（0.5～8 小时）
-        while True:
-            now = datetime.now()
-            uploads_24h = _count_uploads_in_last_24h(uploaded_records, now)
-            if uploads_24h >= max_uploads_per_24h:
-                LOGGER.info(
-                    "过去24小时内已上传 %s 个视频，已达到上限 %s 个，停止本次上传。",
-                    uploads_24h,
-                    max_uploads_per_24h,
-                )
-                return
-
-            last_time = _get_last_upload_time(uploaded_records)
-            if last_time is not None:
-                interval_hours = random.uniform(INTERVAL_MIN_HOURS, INTERVAL_MAX_HOURS)
-                min_next_time = last_time + timedelta(hours=interval_hours)
-                if now < min_next_time:
-                    wait_seconds = (min_next_time - now).total_seconds()
-                    wait_hours = wait_seconds / 3600
-                    LOGGER.info(
-                        "距上次上传未满 %.1f 小时，将等待约 %.1f 小时后再上传下一个视频...",
-                        interval_hours,
-                        wait_hours,
-                    )
-                    time.sleep(wait_seconds)
-                    continue
-            break
-
-        abs_path = str(file_path.resolve())
-        info_result = get_title_and_tags_from_info_json(file_path)
-        if info_result is None:
-            LOGGER.warning("跳过（缺少或无效的同名 .info.json）：%s", file_path.name)
-            continue
-        title, tags = info_result
-
-        LOGGER.info("视频：%s", file_path.name)
-        LOGGER.info("    标题：%s", title)
-        LOGGER.info("    Hashtag：%s", tags)
-
-        app = DouYinVideo(title, file_path, tags, 0, account_file)
-        try:
-            asyncio.run(app.main())
-        except Exception as e:
-            LOGGER.error("上传失败 %s: %s", file_path.name, e)
-            # 上传失败不写入记录，下次运行会重试该视频
+        if not to_upload:
+            LOGGER.info("没有需要上传的新视频，60 秒后重新检查。")
+            time.sleep(60)
             continue
 
-        # 仅在上传成功时记录，避免失败视频被误判为已上传
+        # 每轮开始前检查 24 小时上传配额
         now = datetime.now()
-        save_uploaded_record(abs_path, uploaded_at=now)
-        uploaded_records.append({"path": abs_path, "uploaded_at": now.isoformat()})
-        LOGGER.info("已记录，下次将不再上传：%s", file_path.name)
+        uploads_24h = _count_uploads_in_last_24h(uploaded_records, now)
+        if uploads_24h >= max_uploads_per_24h:
+            LOGGER.info(
+                "过去24小时内已上传 %s 个视频，已达到上限 %s 个，60 秒后重新检查。",
+                uploads_24h,
+                max_uploads_per_24h,
+            )
+            time.sleep(60)
+            continue
 
-    LOGGER.info("本次上传流程结束。")
+        LOGGER.info(
+            "共 %s 个视频，已上传 %s 个，本次待上传 %s 个。",
+            len(all_mp4),
+            len(uploaded_set),
+            len(to_upload),
+        )
+
+        # handle=True：若 cookie 不存在或失效，将自动打开浏览器让你登录一次
+        ok = asyncio.run(douyin_setup(str(account_file), handle=True))
+        if not ok:
+            LOGGER.error("Cookie 无效或未登录，请先运行登录流程。")
+            return
+
+        # 0 表示立即发布，不设置定时
+        reached_quota = False
+        for file_path in to_upload:
+            # 每个视频前检查 24 小时配额与随机间隔（0.5～8 小时）
+            while True:
+                now = datetime.now()
+                uploads_24h = _count_uploads_in_last_24h(uploaded_records, now)
+                if uploads_24h >= max_uploads_per_24h:
+                    LOGGER.info(
+                        "过去24小时内已上传 %s 个视频，已达到上限 %s 个，停止本轮上传，60 秒后重新检查。",
+                        uploads_24h,
+                        max_uploads_per_24h,
+                    )
+                    reached_quota = True
+                    break
+
+                last_time = _get_last_upload_time(uploaded_records)
+                if last_time is not None:
+                    interval_hours = random.uniform(INTERVAL_MIN_HOURS, INTERVAL_MAX_HOURS)
+                    min_next_time = last_time + timedelta(hours=interval_hours)
+                    if now < min_next_time:
+                        wait_seconds = (min_next_time - now).total_seconds()
+                        wait_hours = wait_seconds / 3600
+                        LOGGER.info(
+                            "距上次上传未满 %.1f 小时，将等待约 %.1f 小时后再上传下一个视频...",
+                            interval_hours,
+                            wait_hours,
+                        )
+                        time.sleep(wait_seconds)
+                        continue
+                break
+
+            if reached_quota:
+                break
+
+            abs_path = str(file_path.resolve())
+            info_result = get_title_and_tags_from_info_json(file_path)
+            if info_result is None:
+                LOGGER.warning("跳过（缺少或无效的同名 .info.json）：%s", file_path.name)
+                continue
+            title, tags = info_result
+
+            LOGGER.info("视频：%s", file_path.name)
+            LOGGER.info("    标题：%s", title)
+            LOGGER.info("    Hashtag：%s", tags)
+
+            app = DouYinVideo(title, file_path, tags, 0, account_file)
+            try:
+                asyncio.run(app.main())
+            except Exception as e:
+                LOGGER.error("上传失败 %s: %s", file_path.name, e)
+                # 上传失败不写入记录，下次运行会重试该视频
+                continue
+
+            # 仅在上传成功时记录，避免失败视频被误判为已上传
+            now = datetime.now()
+            save_uploaded_record(abs_path, uploaded_at=now)
+            uploaded_records.append({"path": abs_path, "uploaded_at": now.isoformat()})
+            LOGGER.info("已记录，下次将不再上传：%s", file_path.name)
+
+        if reached_quota:
+            # 达到 24 小时上限后，等待一段时间再重新检查
+            time.sleep(60)
 
 
 if __name__ == "__main__":

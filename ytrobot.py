@@ -61,6 +61,8 @@ SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
 # 从订阅频道中取最近视频时：最多取多少订阅、每频道取多少条
 MAX_SUBSCRIPTIONS = 30
 VIDEOS_PER_CHANNEL = 5
+# 只下载小于此大小的视频（字节），默认 1GB
+MAX_VIDEO_SIZE_BYTES = 1024 ** 3
 
 
 LOGGER = logging.getLogger("ytrobot")
@@ -500,6 +502,11 @@ def download_video(video_url, output_dir='./youtube_downloads', proxy_url=None, 
             info = ydl.extract_info(video_url, download=False)
         if not info:
             LOGGER.error("下载失败：无法获取视频信息")
+            return False, None
+        # 只下载小于 1GB 的视频（yt-dlp 可能返回 filesize 或 filesize_approx）
+        size = info.get('filesize') or info.get('filesize_approx')
+        if size is not None and size > MAX_VIDEO_SIZE_BYTES:
+            LOGGER.info("跳过（体积 %.1f MB > %d MB）：%s", size / (1024 * 1024), MAX_VIDEO_SIZE_BYTES // (1024 * 1024), info.get('title', video_url))
             return False, None
         orig_title = info.get('title') or ''
         info['title'] = _to_simplified(orig_title)
