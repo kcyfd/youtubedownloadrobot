@@ -9,13 +9,23 @@ import asyncio
 import json
 import logging
 import random
+import smtplib
 import sys
 import time
+from email.message import EmailMessage
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta
 
-from conf import BASE_DIR
+from conf import (
+    BASE_DIR,
+    EMAIL_NOTIFY_ENABLED,
+    EMAIL_SMTP_HOST,
+    EMAIL_SMTP_PORT,
+    EMAIL_USE_TLS,
+    EMAIL_USERNAME,
+    EMAIL_PASSWORD,
+)
 from uploader.douyin_uploader.main import douyin_setup, DouYinVideo
 
 
@@ -54,9 +64,9 @@ def configure_logging(log_file=None):
 RECORD_DIR = Path(BASE_DIR) / "data"
 RECORD_FILE = RECORD_DIR / "douyin_uploaded.json"
 
-# 上传间隔随机范围（小时）
-INTERVAL_MIN_HOURS = 0.5
-INTERVAL_MAX_HOURS = 8.0
+# 上传间隔随机范围默认值（小时），可被 config.json 覆盖
+DEFAULT_INTERVAL_MIN_HOURS = 0.5
+DEFAULT_INTERVAL_MAX_HOURS = 2.0
 
 
 def load_douyin_config():
@@ -64,16 +74,76 @@ def load_douyin_config():
     config_path = Path(BASE_DIR) / "config.json"
     default_max_per_24h = 10
     if not config_path.exists():
-        return {"douyin_max_uploads_per_24h": default_max_per_24h}
+        return {
+            "douyin_max_uploads_per_24h": default_max_per_24h,
+            "douyin_interval_min_hours": DEFAULT_INTERVAL_MIN_HOURS,
+            "douyin_interval_max_hours": DEFAULT_INTERVAL_MAX_HOURS,
+        }
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         max_per_24h = data.get("douyin_max_uploads_per_24h", default_max_per_24h)
         if not isinstance(max_per_24h, int) or max_per_24h < 1:
             max_per_24h = default_max_per_24h
-        return {"douyin_max_uploads_per_24h": max_per_24h}
+        min_h = data.get("douyin_interval_min_hours", DEFAULT_INTERVAL_MIN_HOURS)
+        max_h = data.get("douyin_interval_max_hours", DEFAULT_INTERVAL_MAX_HOURS)
+        try:
+            min_h = float(min_h)
+            max_h = float(max_h)
+        except (TypeError, ValueError):
+            min_h, max_h = DEFAULT_INTERVAL_MIN_HOURS, DEFAULT_INTERVAL_MAX_HOURS
+        if min_h < 0:
+            min_h = DEFAULT_INTERVAL_MIN_HOURS
+        if max_h < min_h:
+            max_h = min_h
+        return {
+            "douyin_max_uploads_per_24h": max_per_24h,
+            "douyin_interval_min_hours": min_h,
+            "douyin_interval_max_hours": max_h,
+        }
     except (json.JSONDecodeError, IOError, TypeError):
-        return {"douyin_max_uploads_per_24h": default_max_per_24h}
+        return {
+            "douyin_max_uploads_per_24h": default_max_per_24h,
+            "douyin_interval_min_hours": DEFAULT_INTERVAL_MIN_HOURS,
+            "douyin_interval_max_hours": DEFAULT_INTERVAL_MAX_HOURS,
+        }
+
+
+def _send_email(subject: str, body: str) -> bool:
+    """发送简单文本邮件，用于数量阈值提醒。"""
+    if not EMAIL_NOTIFY_ENABLED:
+        LOGGER.info("邮件提醒未启用（EMAIL_NOTIFY_ENABLED=False），跳过发送：%s", subject)
+        return False
+
+    sender = EMAIL_USERNAME
+    recipient = EMAIL_USERNAME
+    if not sender or not recipient or not EMAIL_SMTP_HOST:
+        LOGGER.warning("邮件配置不完整（发件人/收件人/SMTP 主机为空），跳过发送：%s", subject)
+        return False
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.set_content(body)
+
+    try:
+        if EMAIL_USE_TLS:
+            with smtplib.SMTP(EMAIL_SMTP_HOST, EMAIL_SMTP_PORT) as server:
+                server.starttls()
+                if EMAIL_USERNAME:
+                    server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL(EMAIL_SMTP_HOST, EMAIL_SMTP_PORT) as server:
+                if EMAIL_USERNAME:
+                    server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+                server.send_message(msg)
+        LOGGER.info("已发送邮件提醒：%s -> %s", subject, recipient)
+        return True
+    except Exception as e:
+        LOGGER.error("发送邮件提醒失败：%s", e)
+        return False
 
 
 def load_uploaded_records():
@@ -196,13 +266,19 @@ def main():
 
     douyin_config = load_douyin_config()
     max_uploads_per_24h = douyin_config["douyin_max_uploads_per_24h"]
+    interval_min_hours = douyin_config["douyin_interval_min_hours"]
+    interval_max_hours = douyin_config["douyin_interval_max_hours"]
 
     LOGGER.info(
-        "24 小时上限：%s 个，上传间隔：%s～%s 小时随机。",
+        "24 小时上限：%s 个，上传间隔：%.1f～%.1f 小时随机。",
         max_uploads_per_24h,
-        INTERVAL_MIN_HOURS,
-        INTERVAL_MAX_HOURS,
+        interval_min_hours,
+        interval_max_hours,
     )
+
+    # 剩余数量邮件提醒阈值与已提醒记录
+    notify_thresholds = {5, 4, 3, 2, 1}
+    notified_counts: set[int] = set()
 
     # 持续运行：循环检查新视频并上传
     while True:
@@ -210,6 +286,19 @@ def main():
         uploaded_set = {item["path"] for item in uploaded_records if item.get("path")}
         all_mp4 = sorted(video_dir.glob("*.mp4"))
         to_upload = [f for f in all_mp4 if str(f.resolve()) not in uploaded_set]
+
+        remaining = len(to_upload)
+        if remaining in notify_thresholds and remaining not in notified_counts:
+            subject = f"抖音上传剩余视频提醒：还剩 {remaining} 个待上传视频"
+            last_time = _get_last_upload_time(uploaded_records)
+            last_time_str = last_time.isoformat(sep=" ", timespec="seconds") if last_time else "无记录"
+            body = (
+                f"当前时间：{datetime.now().isoformat(sep=' ', timespec='seconds')}\n"
+                f"最后上传时间：{last_time_str}\n"
+                f"当前剩余待上传视频数：{remaining}\n"
+            )
+            _send_email(subject, body)
+            notified_counts.add(remaining)
 
         if not to_upload:
             LOGGER.info("没有需要上传的新视频，60 秒后重新检查。")
@@ -220,8 +309,11 @@ def main():
         now = datetime.now()
         uploads_24h = _count_uploads_in_last_24h(uploaded_records, now)
         if uploads_24h >= max_uploads_per_24h:
+            last_time = _get_last_upload_time(uploaded_records)
+            last_time_str = last_time.isoformat(sep=" ", timespec="seconds") if last_time else "无记录"
             LOGGER.info(
-                "过去24小时内已上传 %s 个视频，已达到上限 %s 个，60 秒后重新检查。",
+                "最后上传时间 %s，过去24小时内已上传 %s 个视频，已达到上限 %s 个，60 秒后重新检查。",
+                last_time_str,
                 uploads_24h,
                 max_uploads_per_24h,
             )
@@ -243,7 +335,9 @@ def main():
 
         # 0 表示立即发布，不设置定时
         reached_quota = False
-        for file_path in to_upload:
+        total_this_round = len(to_upload)
+        uploaded_this_round = 0
+        for idx, file_path in enumerate(to_upload):
             # 每个视频前检查 24 小时配额与随机间隔（0.5～8 小时）
             while True:
                 now = datetime.now()
@@ -259,7 +353,7 @@ def main():
 
                 last_time = _get_last_upload_time(uploaded_records)
                 if last_time is not None:
-                    interval_hours = random.uniform(INTERVAL_MIN_HOURS, INTERVAL_MAX_HOURS)
+                    interval_hours = random.uniform(interval_min_hours, interval_max_hours)
                     min_next_time = last_time + timedelta(hours=interval_hours)
                     if now < min_next_time:
                         wait_seconds = (min_next_time - now).total_seconds()
@@ -283,7 +377,16 @@ def main():
                 continue
             title, tags = info_result
 
-            LOGGER.info("视频：%s", file_path.name)
+            current_n = idx + 1
+            remaining = total_this_round - current_n
+            LOGGER.info(
+                "视频：%s（第 %s/%s 个，本轮已上传 %s 个，还剩 %s 个）",
+                file_path.name,
+                current_n,
+                total_this_round,
+                uploaded_this_round,
+                remaining,
+            )
             LOGGER.info("    标题：%s", title)
             LOGGER.info("    Hashtag：%s", tags)
 
@@ -299,7 +402,8 @@ def main():
             now = datetime.now()
             save_uploaded_record(abs_path, uploaded_at=now)
             uploaded_records.append({"path": abs_path, "uploaded_at": now.isoformat()})
-            LOGGER.info("已记录，下次将不再上传：%s", file_path.name)
+            uploaded_this_round += 1
+            LOGGER.info("已记录，下次将不再上传：%s（本轮已上传 %s 个，还剩 %s 个）", file_path.name, uploaded_this_round, total_this_round - uploaded_this_round)
 
         if reached_quota:
             # 达到 24 小时上限后，等待一段时间再重新检查

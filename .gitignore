@@ -11,3 +11,5 @@ token.json
 /uploader/__pycache__
 /utils/__pycache__
 /cookies
+email_config.json
+ffmpeg.exe

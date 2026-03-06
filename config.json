@@ -1,5 +1,8 @@
 {
   "proxy": "socks5://127.0.0.1:10809",
   "cookies_from_browser": "firefox",
-  "douyin_max_uploads_per_24h": 10
+  "douyin_max_uploads_per_24h": 10,
+  "douyin_interval_min_hours": 0.5,
+  "douyin_interval_max_hours": 2,
+  "ytrobot_interval_hours": 24
 }
