@@ -48,8 +48,19 @@ async def cookie_auth(account_file):
         return True
 
 
-async def douyin_setup(account_file, handle=False):
-    if not os.path.exists(account_file) or not await cookie_auth(account_file):
+async def douyin_setup(account_file, handle=False, check_cookie=True):
+    """若 check_cookie=False，仅检查 account_file 是否存在，不打开浏览器做 cookie 校验（上传时会再开浏览器，届时再发现 cookie 失效）。"""
+    if not os.path.exists(account_file):
+        if not handle:
+            return False
+        douyin_logger.info(
+            "[+] cookie文件不存在或已失效，即将自动打开浏览器，请扫码登录，登陆后会自动生成cookie文件"
+        )
+        await douyin_cookie_gen(account_file)
+        return True
+    if not check_cookie:
+        return True
+    if not await cookie_auth(account_file):
         if not handle:
             return False
         douyin_logger.info(
@@ -121,7 +132,7 @@ class DouYinVideo(object):
         douyin_logger.info("视频出错了，重新上传中")
         await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
 
-    async def upload(self, playwright: Playwright) -> None:
+    async def upload(self, playwright: Playwright) -> bool:
         if self.local_executable_path:
             browser = await playwright.chromium.launch(
                 headless=self.headless, executable_path=self.local_executable_path
@@ -146,7 +157,7 @@ class DouYinVideo(object):
                 )
                 await context.close()
                 await browser.close()
-                return
+                return False
         except Exception:
             # 忽略占位符选择器异常，继续后续流程
             pass
@@ -160,7 +171,7 @@ class DouYinVideo(object):
             douyin_logger.error("未找到上传视频的文件选择框，页面可能已改版或尚未登录。")
             await context.close()
             await browser.close()
-            return
+            return False
         await file_input.set_input_files(self.file_path)
 
         while True:
@@ -181,7 +192,43 @@ class DouYinVideo(object):
                     break
                 except Exception:
                     print("  [-] 超时未进入视频发布页面，重新尝试...")
-                    await asyncio.sleep(0.5)
+                    await context.close()
+                    await browser.close()
+                    douyin_logger.info("  [-] 关闭浏览器，30秒后重试...")
+                    await asyncio.sleep(30)
+                    # 重新启动浏览器并从头执行上传入口
+                    if self.local_executable_path:
+                        browser = await playwright.chromium.launch(
+                            headless=self.headless, executable_path=self.local_executable_path
+                        )
+                    else:
+                        browser = await playwright.chromium.launch(headless=self.headless)
+                    context = await browser.new_context(storage_state=f"{self.account_file}")
+                    context = await set_init_script(context)
+                    page = await context.new_page()
+                    await page.goto("https://creator.douyin.com/creator-micro/content/upload")
+                    douyin_logger.info("[-] 正在打开主页...")
+                    await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload")
+                    try:
+                        login_phone_input = page.get_by_placeholder("请输入手机号")
+                        if await login_phone_input.count():
+                            douyin_logger.error(
+                                "检测到当前页面是登录页，请先运行 python douyin_login.py 完成登录，再重新执行上传。"
+                            )
+                            await context.close()
+                            await browser.close()
+                            return False
+                    except Exception:
+                        pass
+                    file_input = page.locator("input[type='file']").first
+                    if not await file_input.count():
+                        file_input = page.locator("div[class^='container'] input[type='file']").first
+                    if not await file_input.count():
+                        douyin_logger.error("未找到上传视频的文件选择框，页面可能已改版或尚未登录。")
+                        await context.close()
+                        await browser.close()
+                        return False
+                    await file_input.set_input_files(self.file_path)
 
         await asyncio.sleep(1)
         douyin_logger.info("  [-] 正在填充标题和话题...")
@@ -278,6 +325,7 @@ class DouYinVideo(object):
         await asyncio.sleep(2)
         await context.close()
         await browser.close()
+        return True
 
     async def handle_auto_video_cover(self, page):
         if await page.get_by_text("请设置封面后再发布").first.is_visible():
@@ -404,5 +452,5 @@ class DouYinVideo(object):
 
     async def main(self):
         async with async_playwright() as playwright:
-            await self.upload(playwright)
+            return await self.upload(playwright)
 

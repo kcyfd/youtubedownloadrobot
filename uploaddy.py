@@ -60,9 +60,29 @@ def configure_logging(log_file=None):
     LOGGER.propagate = False
 
 
-# 已上传记录文件（存绝对路径，避免重复上传）
+# 已上传记录文件（存相对 BASE_DIR 的相对路径，便于跨机器一致）
 RECORD_DIR = Path(BASE_DIR) / "data"
 RECORD_FILE = RECORD_DIR / "douyin_uploaded.json"
+
+
+def _path_to_relative_record(path_str: str) -> str:
+    """将任意路径转为相对 BASE_DIR 的路径，使用正斜杠。"""
+    base = Path(BASE_DIR).resolve()
+    p = Path(path_str).resolve()
+    try:
+        return p.relative_to(base).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def _normalize_record_path(path_str: str) -> str:
+    """将记录中的 path（可能为历史绝对路径或相对路径）规范化为相对路径形式用于比对。"""
+    if not path_str:
+        return path_str
+    p = Path(path_str)
+    if p.is_absolute():
+        return _path_to_relative_record(path_str)
+    return p.as_posix()
 
 # 上传间隔随机范围默认值（小时），可被 config.json 覆盖
 DEFAULT_INTERVAL_MIN_HOURS = 0.5
@@ -161,17 +181,13 @@ def load_uploaded_records():
         return []
     if isinstance(data[0], dict):
         return data
-    records = []
-    for path in data:
-        if path:
-            records.append({"path": path, "uploaded_at": None})
-    return records
+    return [{"path": path, "uploaded_at": None} for path in data if path]
 
 
 def load_uploaded_set():
-    """加载已上传记录，返回「已上传绝对路径」集合。"""
+    """加载已上传记录，返回「已上传路径」集合（规范化为相对路径形式便于比对）。"""
     records = load_uploaded_records()
-    return {item["path"] for item in records if item.get("path")}
+    return {_normalize_record_path(item["path"]) for item in records if item.get("path")}
 
 
 def _parse_uploaded_at(record):
@@ -285,7 +301,7 @@ def main():
         uploaded_records = load_uploaded_records()
         uploaded_set = {item["path"] for item in uploaded_records if item.get("path")}
         all_mp4 = sorted(video_dir.glob("*.mp4"))
-        to_upload = [f for f in all_mp4 if str(f.resolve()) not in uploaded_set]
+        to_upload = [f for f in all_mp4 if _path_to_relative_record(str(f.resolve())) not in uploaded_set]
 
         remaining = len(to_upload)
         if remaining in notify_thresholds and remaining not in notified_counts:
@@ -328,7 +344,8 @@ def main():
         )
 
         # handle=True：若 cookie 不存在或失效，将自动打开浏览器让你登录一次
-        ok = asyncio.run(douyin_setup(str(account_file), handle=True))
+        # check_cookie=False：不在此处做 cookie 校验，避免多开一次浏览器；上传时若 cookie 失效会提示
+        ok = asyncio.run(douyin_setup(str(account_file), handle=True, check_cookie=False))
         if not ok:
             LOGGER.error("Cookie 无效或未登录，请先运行登录流程。")
             return
@@ -392,16 +409,20 @@ def main():
 
             app = DouYinVideo(title, file_path, tags, 0, account_file)
             try:
-                asyncio.run(app.main())
+                success = asyncio.run(app.main())
             except Exception as e:
                 LOGGER.error("上传失败 %s: %s", file_path.name, e)
                 # 上传失败不写入记录，下次运行会重试该视频
                 continue
+            if not success:
+                LOGGER.error("上传失败（未写入已上传记录），下次将重试：%s", file_path.name)
+                continue
 
-            # 仅在上传成功时记录，避免失败视频被误判为已上传
+            # 仅在上传成功时记录，避免失败视频被误判为已上传（path 存相对路径）
             now = datetime.now()
-            save_uploaded_record(abs_path, uploaded_at=now)
-            uploaded_records.append({"path": abs_path, "uploaded_at": now.isoformat()})
+            rel_path = _path_to_relative_record(abs_path)
+            save_uploaded_record(rel_path, uploaded_at=now)
+            uploaded_records.append({"path": rel_path, "uploaded_at": now.isoformat()})
             uploaded_this_round += 1
             LOGGER.info("已记录，下次将不再上传：%s（本轮已上传 %s 个，还剩 %s 个）", file_path.name, uploaded_this_round, total_this_round - uploaded_this_round)
 
