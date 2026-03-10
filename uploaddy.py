@@ -336,10 +336,11 @@ def main():
             time.sleep(60)
             continue
 
+        uploaded_count_this_dir = len(all_mp4) - len(to_upload)
         LOGGER.info(
             "共 %s 个视频，已上传 %s 个，本次待上传 %s 个。",
             len(all_mp4),
-            len(uploaded_set),
+            uploaded_count_this_dir,
             len(to_upload),
         )
 
