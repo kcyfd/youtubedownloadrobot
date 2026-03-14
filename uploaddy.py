@@ -295,6 +295,9 @@ def main():
     # 剩余数量邮件提醒阈值与已提醒记录
     notify_thresholds = {5, 4, 3, 2, 1}
     notified_counts: set[int] = set()
+    # 上传失败邮件提醒：一小时内最多发送一次
+    last_upload_failure_email_at: datetime | None = None
+    FAILURE_EMAIL_COOLDOWN = timedelta(hours=1)
 
     # 持续运行：循环检查新视频并上传
     while True:
@@ -413,10 +416,32 @@ def main():
                 success = asyncio.run(app.main())
             except Exception as e:
                 LOGGER.error("上传失败 %s: %s", file_path.name, e)
+                # 上传失败邮件提醒（一小时内最多一次）
+                now_ = datetime.now()
+                if last_upload_failure_email_at is None or (now_ - last_upload_failure_email_at) >= FAILURE_EMAIL_COOLDOWN:
+                    subject = "抖音上传失败提醒"
+                    body = (
+                        f"当前时间：{now_.isoformat(sep=' ', timespec='seconds')}\n"
+                        f"失败视频：{file_path.name}\n"
+                        f"错误信息：{e}\n"
+                    )
+                    if _send_email(subject, body):
+                        last_upload_failure_email_at = now_
                 # 上传失败不写入记录，下次运行会重试该视频
                 continue
             if not success:
                 LOGGER.error("上传失败（未写入已上传记录），下次将重试：%s", file_path.name)
+                # 上传失败邮件提醒（一小时内最多一次）
+                now_ = datetime.now()
+                if last_upload_failure_email_at is None or (now_ - last_upload_failure_email_at) >= FAILURE_EMAIL_COOLDOWN:
+                    subject = "抖音上传失败提醒"
+                    body = (
+                        f"当前时间：{now_.isoformat(sep=' ', timespec='seconds')}\n"
+                        f"失败视频：{file_path.name}\n"
+                        f"错误信息：上传未成功（未写入已上传记录）\n"
+                    )
+                    if _send_email(subject, body):
+                        last_upload_failure_email_at = now_
                 continue
 
             # 仅在上传成功时记录，避免失败视频被误判为已上传（path 存相对路径）

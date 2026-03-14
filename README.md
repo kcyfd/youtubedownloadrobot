@@ -70,7 +70,10 @@ pip install zhconv
 
 ### 4. email_config.json（可选）
 
-用于抖音上传「剩余视频数量」邮件提醒。当待上传视频剩余 5、4、3、2、1 个时会发邮件到 `EMAIL_USERNAME` 对应邮箱。在项目根目录创建 `email_config.json`：
+用于抖音上传相关邮件提醒，在项目根目录创建 `email_config.json`：
+
+- **剩余视频数量提醒**：当待上传视频剩余 5、4、3、2、1 个时，会发邮件到 `EMAIL_USERNAME` 对应邮箱。
+- **上传失败提醒**：某次上传失败（如页面改版、未登录等）时会发邮件；同一小时内多次失败只发送一次，避免刷屏。
 
 ```json
 {
@@ -91,7 +94,7 @@ QQ 邮箱需在设置中开启 SMTP 并使用授权码。运行 `python test_ema
 |-----------|------|
 | `ytrobot.py` | 下载主程序（持续运行，按 `ytrobot_interval_hours` 定时下载；仅下载小于 1 GB 的视频） |
 | `ytdl.py` | 单个视频下载脚本 |
-| `uploaddy.py` | 抖音上传主程序（常驻运行，扫描 `youtube_downloads/` 中的 mp4 并上传，剩余 ≤5 个时可邮件提醒） |
+| `uploaddy.py` | 抖音上传主程序（常驻运行，扫描 `youtube_downloads/` 中的 mp4 并上传；剩余 5/4/3/2/1 个时邮件提醒，上传失败时也邮件提醒且一小时内最多一次） |
 | `douyin_login.py` | 抖音登录脚本，生成 `cookies/douyin_uploader/account.json` |
 | `test_email.py` | 邮件发送测试脚本 |
 | `conf.py` | 抖音上传、邮件等基础配置（浏览器路径等） |
@@ -134,7 +137,7 @@ playwright install
   常驻运行，定期扫描 `youtube_downloads/` 中未上传过的 mp4，通过同名 `.info.json` 的标题和标签作为抖音标题与话题上传；  
   若 cookie 不存在或失效，会自动触发浏览器登录一次；全部上传完后每隔 60 秒重新检查是否有新视频。  
   在 `config.json` 中可配置：`douyin_max_uploads_per_24h`（24 小时内最多上传数量，默认 10）；`douyin_interval_min_hours` / `douyin_interval_max_hours`（每两个视频之间的间隔随机范围，默认 0.5～2 小时）。上传失败的视频不会写入已上传记录，下次会重试。  
-  当待上传视频剩余 5、4、3、2、1 个时会发送邮件提醒（需在 `email_config.json` 中配置并开启 `EMAIL_NOTIFY_ENABLED`）。
+  邮件提醒（需在 `email_config.json` 中配置并开启 `EMAIL_NOTIFY_ENABLED`）：待上传视频剩余 5、4、3、2、1 个时发送；上传失败时也会发送，且同一小时内最多发送一次失败提醒。
 
 ## 运行方式
 
