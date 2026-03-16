@@ -9,7 +9,9 @@ import asyncio
 import json
 import logging
 import random
+import re
 import smtplib
+import subprocess
 import sys
 import time
 from email.message import EmailMessage
@@ -246,6 +248,62 @@ def get_title_and_tags_from_info_json(video_path: Path):
         return None
 
 
+def get_video_duration_seconds(video_path: Path) -> int | None:
+    """
+    优先使用 ffprobe，若不存在则回退使用 ffmpeg 输出中的 Duration 行读取视频时长（秒）。
+    需要本机已安装 ffmpeg（推荐同时安装 ffprobe）。失败时返回 None，不影响后续上传逻辑。
+    """
+    try:
+        # 先尝试使用 ffprobe（如果在 PATH 中）
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "json",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            data = json.loads(result.stdout or "{}")
+            duration_str = data.get("format", {}).get("duration")
+            if duration_str:
+                return int(float(duration_str))
+        except FileNotFoundError:
+            # ffprobe 不存在时回退到 ffmpeg 解析 Duration 行
+            pass
+
+        # 使用 ffmpeg 输出中的 "Duration: 00:03:21.45" 行解析
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-i", str(video_path)],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError as e:
+            LOGGER.warning("读取视频时长失败（未找到 ffmpeg/ffprobe），将忽略时长限制：%s (%s)", video_path.name, e)
+            return None
+
+        output = result.stderr or result.stdout or ""
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+        if not match:
+            return None
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = float(match.group(3))
+        total_seconds = int(hours * 3600 + minutes * 60 + seconds)
+        return total_seconds
+    except Exception as e:
+        LOGGER.warning("读取视频时长失败，将忽略时长限制：%s (%s)", video_path.name, e)
+        return None
+
+
 def save_uploaded_record(path: str, uploaded_at: datetime | None = None):
     """追加一条上传成功记录并写回文件。"""
     RECORD_DIR.mkdir(parents=True, exist_ok=True)
@@ -397,6 +455,16 @@ def main():
                 LOGGER.warning("跳过（缺少或无效的同名 .info.json）：%s", file_path.name)
                 continue
             title, tags = info_result
+
+            # 若能成功读取时长且超过 30 分钟，则跳过上传
+            duration_seconds = get_video_duration_seconds(file_path)
+            if isinstance(duration_seconds, int) and duration_seconds > 30 * 60:
+                LOGGER.info(
+                    "跳过（时长超过 30 分钟）：%s（约 %.1f 分钟）",
+                    file_path.name,
+                    duration_seconds / 60,
+                )
+                continue
 
             current_n = idx + 1
             remaining = total_this_round - current_n

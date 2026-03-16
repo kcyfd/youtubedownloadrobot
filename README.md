@@ -120,6 +120,12 @@ pip install playwright loguru
 playwright install
 ```
 
+另外，`uploaddy.py` 在上传前会检查视频时长，**超过 30 分钟的会跳过上传**：  
+- 优先使用 `ffprobe` 读取时长；  
+- 若未安装 `ffprobe`，会回退到使用 `ffmpeg` 输出中的 `Duration` 行解析时长。  
+
+因此推荐在系统中安装 ffmpeg（包含 ffmpeg/ffprobe 可执行文件），并确保在 PATH 中可以直接调用 `ffmpeg` / `ffprobe`。
+
 默认使用 Playwright 自带的 Chromium；如需指定本机 Chrome 可在 `conf.py` 中设置 `LOCAL_CHROME_PATH`。
 
 ### 抖音登录与上传
